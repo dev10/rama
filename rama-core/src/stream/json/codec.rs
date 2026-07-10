@@ -8,7 +8,6 @@ use crate::{bytes::BytesMut, stream::json::ParseConfig};
 
 /// NDJson encoder.
 pub struct JsonEncoder<T> {
-    written: bool,
     _phantom: PhantomData<fn() -> T>,
 }
 
@@ -16,21 +15,6 @@ impl<T> JsonEncoder<T> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            written: false,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<T> JsonEncoder<T> {
-    #[must_use]
-    /// Use [`JsonEncoder::new`] for new streams.
-    /// This constructor can be used if you wish to start
-    /// the strema with a newline because you are continuing
-    /// to write to a stream where you left of.
-    pub fn new_continued() -> Self {
-        Self {
-            written: true,
             _phantom: PhantomData,
         }
     }
@@ -55,13 +39,10 @@ impl<T: Serialize> crate::stream::codec::Encoder<T> for JsonEncoder<T> {
     type Error = BoxError;
 
     fn encode(&mut self, data: T, buf: &mut BytesMut) -> Result<(), Self::Error> {
-        if self.written {
-            buf.put_u8(b'\n');
-        }
         let result = serde_json::to_writer(buf.writer(), &data)
             .context("serde-json write data to buffer")
             .into_box_error();
-        self.written = true;
+        buf.put_u8(b'\n');
         result
     }
 }
@@ -157,12 +138,12 @@ mod tests {
         enc.encode(42, &mut buf)?;
 
         let s = core::str::from_utf8(&buf)?;
-        assert_eq!(s, "42"); // no newline
+        assert_eq!(s, "42\n"); // no leading newline
         Ok(())
     }
 
     #[test]
-    fn encode_multiple_values_separated_by_newline_without_trailing_newline() -> Result<(), BoxError>
+    fn encode_multiple_values_separated_by_newline_with_trailing_newline() -> Result<(), BoxError>
     {
         let mut enc: JsonEncoder<u32> = JsonEncoder::new();
         let mut buf = BytesMut::new();
@@ -172,9 +153,10 @@ mod tests {
         enc.encode(3, &mut buf)?;
 
         let bytes = buf.as_ref();
-        // must be "1\n2\n3" with no trailing newline
-        assert_eq!(bytes, b"1\n2\n3");
-        assert_ne!(bytes.last().copied(), Some(b'\n'));
+        // must be "1\n2\n3\n" with trailing newline,
+        // otherwise the last message will not be parsed by the client, and left in the buffer!!
+        assert_eq!(bytes, b"1\n2\n3\n");
+        assert_eq!(bytes.last().copied(), Some(b'\n'));
         Ok(())
     }
 
